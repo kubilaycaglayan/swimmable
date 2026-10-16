@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from starlette.datastructures import UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
@@ -99,8 +100,23 @@ def today():
                 VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (POLICY.version, obs["air"]["id"], obs["sea"]["id"], prediction["id"], result, Jsonb(asdict(POLICY))))
     def serialize_obs(row):
         return None if not row else {"value": row["temperature_c"], "measured_at": iso(row["measured_at"]), "retrieved_at": iso(row["retrieved_at"]), "station": row["station"], "stale": now - row["measured_at"] > timedelta(hours=24)}
-    wave = None if not prediction else {"value": prediction["waviness"], "captured_at": iso(prediction["captured_at"]), "stale": now - prediction["captured_at"] > timedelta(hours=24), "previous_day": prediction["captured_at"].astimezone(TZ).date() != today_local}
+    wave = None if not prediction else {"value": prediction["waviness"], "captured_at": iso(prediction["captured_at"]), "stale": now - prediction["captured_at"] > timedelta(hours=24), "previous_day": prediction["captured_at"].astimezone(TZ).date() != today_local, "preview_url": f"/api/wave-preview/{prediction['id']}" if Path(prediction["input_path"]).is_file() else None}
     return {"today": today_local.isoformat(), "fetched_at": iso(now), "timezone": "Europe/Istanbul", "air": serialize_obs(obs["air"]), "sea": serialize_obs(obs["sea"]), "wave": wave, "bands": bands(prediction["waviness"] if prediction else None, obs["sea"]["temperature_c"] if obs["sea"] else None, obs["air"]["temperature_c"] if obs["air"] else None), "score": result, "score_old_inputs": bool(result is not None and (wave["stale"] or wave["previous_day"] or any(now - row["measured_at"] > timedelta(hours=24) for row in obs.values()))), "policy_version": POLICY.version}
+
+
+@app.get("/api/wave-preview/{prediction_id}")
+def wave_preview(prediction_id: int):
+    with connection() as db:
+        row = db.execute("""SELECT pr.input_path FROM predictions pr JOIN photos ph ON ph.id=pr.photo_id
+            WHERE pr.id=%s AND pr.id=(SELECT latest.id FROM predictions latest JOIN photos latest_photo ON latest_photo.id=latest.photo_id
+              ORDER BY latest_photo.captured_at DESC, latest.id DESC LIMIT 1)""", (prediction_id,)).fetchone()
+    if not row:
+        fail("preview_not_found", 404)
+    model_inputs = (STORE / "model-inputs").resolve()
+    path = Path(row["input_path"]).resolve()
+    if not path.is_relative_to(model_inputs) or path.suffix.lower() != ".jpg" or not path.is_file():
+        fail("preview_not_found", 404)
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400, immutable"})
 
 
 @app.post("/api/admin/login")
