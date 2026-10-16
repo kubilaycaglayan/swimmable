@@ -1,0 +1,76 @@
+services:
+  db:
+    image: postgres:17.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: swimmable
+      POSTGRES_DB: swimmable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swimmable"]
+      interval: 5s
+      retries: 10
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://swimmable@db:5432/swimmable
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PRIVATE_STORE: /private
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?set ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+    volumes:
+      - photos:/private
+    depends_on:
+      db:
+        condition: service_healthy
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://swimmable@db:5432/swimmable
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PRIVATE_STORE: /private
+      MODEL_CHECKPOINT: /model/model.ckpt
+      COLLECTION_SLOTS: ${COLLECTION_SLOTS:-06:00,12:00,18:00}
+      PHOTO_RETENTION_DAYS: ${PHOTO_RETENTION_DAYS:-0}
+    volumes:
+      - photos:/private
+      - ./.private/model/model.ckpt:/model/model.ckpt:ro
+      - model_cache:/model-cache
+    depends_on:
+      db:
+        condition: service_healthy
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+  proxy:
+    image: caddy:2.10.2
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:43255:80
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [api, frontend]
+  tunnel:
+    profiles: [deployment]
+    network_mode: host
+    image: cloudflare/cloudflared:2025.8.1
+    restart: unless-stopped
+    environment:
+      TUNNEL_TOKEN: ${SWIMMABLE_CLOUDFLARE_TOKEN:?set SWIMMABLE_CLOUDFLARE_TOKEN}
+    command: tunnel --no-autoupdate run
+    depends_on: [proxy]
+volumes:
+  database:
+  photos:
+  model_cache:

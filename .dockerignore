@@ -1,0 +1,10 @@
+.git
+.env
+.private
+IMG_7792.HEIC
+plan.md
+*.log
+**/node_modules
+**/.output
+**/.git
+**/.env*

@@ -1,3 +1,16 @@
 .env
+.env.*
+!.env.example
+.private/
 /IMG_7792.HEIC
 /plan.md
+**/__pycache__/
+**/.pytest_cache/
+**/node_modules/
+**/.output/
+*.log
+*.db
+*.sqlite*
+*.bak
+*.backup
+/uploads/

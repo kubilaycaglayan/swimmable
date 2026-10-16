@@ -1,0 +1,12 @@
+FROM python:3.14-slim
+WORKDIR /app
+COPY backend/requirements-api.txt /tmp/api.txt
+COPY prediction-model/requirements.txt /tmp/model.txt
+RUN pip install --no-cache-dir -r /tmp/api.txt && \
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.13.0+cpu' 'torchvision==0.28.0+cpu' && \
+    grep -vE '^(torch|torchvision)==' /tmp/model.txt > /tmp/model-rest.txt && \
+    pip install --no-cache-dir -r /tmp/model-rest.txt
+COPY backend /app/backend
+COPY prediction-model/*.py /prediction-model/
+ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 HF_HOME=/model-cache
+CMD ["python", "-m", "backend.worker"]
