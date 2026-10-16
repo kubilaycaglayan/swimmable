@@ -47,9 +47,12 @@ def session(request: Request, csrf: str | None = None):
 
 
 def capture_time(image: Image.Image):
-    exif = image.getexif()
-    photo_exif = exif.get_ifd(34665) if 34665 in exif else exif
-    raw = photo_exif.get(36867)
+    try:
+        exif = image.getexif()
+        photo_exif = exif.get_ifd(34665) if 34665 in exif else exif
+        raw = photo_exif.get(36867)
+    except (OSError, TypeError, ValueError):
+        raw = None
     if not raw:
         return datetime.now(TZ).astimezone(timezone.utc), False, True
     try:
@@ -70,7 +73,7 @@ def capture_time(image: Image.Image):
             assumed = True
         return value.astimezone(timezone.utc), assumed, False
     except (ValueError, OverflowError):
-        fail("capture_time_invalid")
+        return datetime.now(TZ).astimezone(timezone.utc), False, True
 
 
 @app.on_event("startup")
