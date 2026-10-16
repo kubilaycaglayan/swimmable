@@ -51,7 +51,7 @@ def capture_time(image: Image.Image):
     photo_exif = exif.get_ifd(34665) if 34665 in exif else exif
     raw = photo_exif.get(36867)
     if not raw:
-        fail("capture_time_missing")
+        return datetime.now(TZ).astimezone(timezone.utc), False, True
     try:
         value = datetime.strptime(str(raw), "%Y:%m:%d %H:%M:%S")
         sub = photo_exif.get(37521)
@@ -68,7 +68,7 @@ def capture_time(image: Image.Image):
         else:
             value = value.replace(tzinfo=TZ)
             assumed = True
-        return value.astimezone(timezone.utc), assumed
+        return value.astimezone(timezone.utc), assumed, False
     except (ValueError, OverflowError):
         fail("capture_time_invalid")
 
@@ -184,7 +184,7 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
         with Image.open(io.BytesIO(data)) as decoded:
             if decoded.format not in ("HEIF", "JPEG"):
                 fail("image_format_unsupported")
-            captured, assumed = capture_time(decoded)
+            captured, assumed, capture_assumed = capture_time(decoded)
             width, height, image_format = decoded.width, decoded.height, decoded.format
             if min(width, height) < 224 or width * height > 50_000_000:
                 fail("image_dimensions_invalid")
@@ -201,8 +201,8 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
             return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True, "captured_at": iso(existing["captured_at"])}
         path.write_bytes(data)
         try:
-            inserted = db.execute("""INSERT INTO photos(id,sha256,private_path,original_name,captured_at,offset_assumed,width,height,format)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(sha256) DO NOTHING RETURNING id""", (photo_id, digest, str(path), Path(image.filename or "photo").name[:255], captured, assumed, width, height, image_format)).fetchone()
+            inserted = db.execute("""INSERT INTO photos(id,sha256,private_path,original_name,captured_at,offset_assumed,capture_time_assumed,width,height,format)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(sha256) DO NOTHING RETURNING id""", (photo_id, digest, str(path), Path(image.filename or "photo").name[:255], captured, assumed, capture_assumed, width, height, image_format)).fetchone()
             if not inserted:
                 path.unlink(missing_ok=True)
                 existing = db.execute("SELECT j.id,j.state,p.captured_at FROM photos p JOIN prediction_jobs j ON j.photo_id=p.id WHERE p.sha256=%s", (digest,)).fetchone()
@@ -213,7 +213,7 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
         except Exception:
             path.unlink(missing_ok=True)
             raise
-    return {"job_id": str(job_id), "state": "queued", "duplicate": False, "captured_at": iso(captured), "offset_assumed": assumed}
+    return {"job_id": str(job_id), "state": "queued", "duplicate": False, "captured_at": iso(captured), "offset_assumed": assumed, "capture_time_assumed": capture_assumed}
 
 
 @app.get("/api/admin/jobs/{job_id}")
