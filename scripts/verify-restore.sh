@@ -8,6 +8,6 @@ trap 'docker compose exec -T db dropdb -U swimmable --if-exists "$restore_db" >/
 docker compose exec -T db dropdb -U swimmable --if-exists "$restore_db" >/dev/null
 docker compose exec -T db createdb -U swimmable "$restore_db"
 docker compose exec -T db pg_restore -U swimmable -d "$restore_db" --no-owner < "$backup_dir/database.dump"
-docker compose exec -T db psql -U swimmable -d "$restore_db" -Atc 'SELECT count(*) FROM photos; SELECT count(*) FROM source_observations; SELECT count(*) FROM predictions;'
+docker compose exec -T db psql -U swimmable -d "$restore_db" -Atc 'SELECT count(*) FROM photos; SELECT count(*) FROM source_observations; SELECT count(*) FROM predictions; SELECT count(*) FROM score_revisions; SELECT count(policy_snapshot) FROM score_revisions;'
 tar -C "$scratch" -xf "$backup_dir/photos.tar"
 tar -C "$scratch" -cf /dev/null .
