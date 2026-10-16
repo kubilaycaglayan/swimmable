@@ -1,9 +1,0 @@
-:80 {
- encode zstd gzip
- request_body {
-  max_size 21MB
- }
- @api path /api/*
- reverse_proxy @api api:8000
- reverse_proxy frontend:3000
-}
