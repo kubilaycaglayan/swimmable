@@ -11,6 +11,8 @@ V1 shows today's experimental comfort score for İncesu and Atakum in Samsun. A 
 
 Database and worker ports are private. Uploaded originals and processed model inputs live in the private `photos` volume; the database and model cache have separate persistent volumes. The public dashboard shows only the 224 × 224 JPEG used for the latest successful prediction; original uploads and normalized images remain private. `PHOTO_RETENTION_DAYS=0` retains originals and model inputs indefinitely; setting a positive number prunes private files after completed or failed jobs, while retaining photo metadata and predictions. `/api/today` is public; all `/api/admin/*` routes require the configured administrator session except login. Sessions are Secure, HTTP-only, SameSite Strict cookies, and mutations require CSRF tokens.
 
+Every Compose service uses Docker's `always` restart policy. With the Docker daemon enabled at boot, the database, API, worker, frontend, proxy, and deployment tunnel return after a host reboot and restart after process exits.
+
 ## Collection
 
 The worker attempts Open-Meteo and the explicit MGM station `İLKADIM/SAMSUN LİMAN KUZEY MENDİREK FENERİ` at the configured 06:00, 12:00, and 18:00 Türkiye-time slots. Its database claim is recorded before each request. Each source gets at most three attempts per local day, including failures. It does not retry or backfill missed slots. Browser visits and uploads do not call either provider. An unchanged measurement retains its original timestamp. The API reports missing and stale inputs independently.
