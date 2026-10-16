@@ -21,6 +21,6 @@ The worker attempts Open-Meteo and the explicit MGM station `İLKADIM/SAMSUN Lİ
 
 ## Verification
 
-Run `python3 -m unittest discover -s tests`. The supplied HEIC has original capture time `2026-10-16 12:43:47.069 +03:00`. Physical iPhone Safari and standalone checks remain necessary before claiming full iOS validation.
+Run `python3 -m unittest discover -s tests` for focused scoring checks and `scripts/check-integration.sh` for disposable-database API and worker checks. The supplied HEIC has original capture time `2026-10-16 12:43:47.069 +03:00`. Physical iPhone Safari and standalone checks remain necessary before claiming full iOS validation.
 
 The supplied HEIC completed full CPU inference in about 174 seconds on this host, with a sampled worker peak near 9.1 GiB RAM. Its saved 224 × 224 JPEG reproduced waviness 0.43999361991882324 when rerun with `--preprocessed`. This is a deployment sizing observation, not a speed guarantee.

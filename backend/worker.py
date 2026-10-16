@@ -148,6 +148,11 @@ def prune_private_files():
                     Path(path).unlink(missing_ok=True)
             db.execute("UPDATE photos SET files_pruned_at=now() WHERE id=%s", (row["id"],))
 
+def recover_interrupted_jobs():
+    with connection() as db:
+        db.execute("UPDATE prediction_jobs SET state='queued',started_at=NULL WHERE state='processing'")
+
+
 def main():
     migrate()
     # A session lock keeps inference single-file across replicas. On restart,
@@ -157,8 +162,7 @@ def main():
         if not locked:
             raise RuntimeError("another worker already holds the inference lock")
         lock_db.commit()
-        with connection() as db:
-            db.execute("UPDATE prediction_jobs SET state='queued',started_at=NULL WHERE state='processing'")
+        recover_interrupted_jobs()
         last_prune = 0.0
         while True:
             collect_due()

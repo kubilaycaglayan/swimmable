@@ -180,12 +180,19 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
     extension = ".heic" if image_format == "HEIF" else ".jpg"
     path = STORE / "originals" / f"{photo_id}{extension}"
     with connection() as db:
-        existing = db.execute("SELECT j.id,j.state FROM photos p JOIN prediction_jobs j ON j.photo_id=p.id WHERE p.sha256=%s", (digest,)).fetchone()
+        existing = db.execute("SELECT j.id,j.state,p.captured_at FROM photos p JOIN prediction_jobs j ON j.photo_id=p.id WHERE p.sha256=%s", (digest,)).fetchone()
         if existing:
-            return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True}
+            return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True, "captured_at": iso(existing["captured_at"])}
         path.write_bytes(data)
         try:
-            db.execute("INSERT INTO photos(id,sha256,private_path,original_name,captured_at,offset_assumed,width,height,format) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (photo_id, digest, str(path), Path(image.filename or "photo").name[:255], captured, assumed, width, height, image_format))
+            inserted = db.execute("""INSERT INTO photos(id,sha256,private_path,original_name,captured_at,offset_assumed,width,height,format)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(sha256) DO NOTHING RETURNING id""", (photo_id, digest, str(path), Path(image.filename or "photo").name[:255], captured, assumed, width, height, image_format)).fetchone()
+            if not inserted:
+                path.unlink(missing_ok=True)
+                existing = db.execute("SELECT j.id,j.state,p.captured_at FROM photos p JOIN prediction_jobs j ON j.photo_id=p.id WHERE p.sha256=%s", (digest,)).fetchone()
+                if not existing:
+                    fail("upload_conflict", 409)
+                return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True, "captured_at": iso(existing["captured_at"])}
             db.execute("INSERT INTO prediction_jobs(id,photo_id) VALUES (%s,%s)", (job_id, photo_id))
         except Exception:
             path.unlink(missing_ok=True)
