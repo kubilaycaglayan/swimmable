@@ -1,0 +1,8 @@
+[submodule "frontend"]
+	path = frontend
+	url = git@github.com:kubilaycaglayan/wavewatch-pro.git
+	branch = main
+[submodule "prediction-model"]
+	path = prediction-model
+	url = https://huggingface.co/kubilaycaglayan/wave-regression
+	branch = main
