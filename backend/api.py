@@ -6,6 +6,7 @@ import ipaddress
 import os
 import secrets
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -13,6 +14,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from starlette.datastructures import UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
+from psycopg.types.json import Jsonb
 from .db import connection, migrate
 from .scoring import POLICY, bands, score
 
@@ -93,8 +95,8 @@ def today():
         result = None
         if prediction and all(obs.values()):
             result = score(prediction["waviness"], obs["sea"]["temperature_c"], obs["air"]["temperature_c"])
-            db.execute("""INSERT INTO score_revisions(policy_version, air_observation_id, sea_observation_id, prediction_id, score)
-                VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (POLICY.version, obs["air"]["id"], obs["sea"]["id"], prediction["id"], result))
+            db.execute("""INSERT INTO score_revisions(policy_version, air_observation_id, sea_observation_id, prediction_id, score, policy_snapshot)
+                VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (POLICY.version, obs["air"]["id"], obs["sea"]["id"], prediction["id"], result, Jsonb(asdict(POLICY))))
     def serialize_obs(row):
         return None if not row else {"value": row["temperature_c"], "measured_at": iso(row["measured_at"]), "retrieved_at": iso(row["retrieved_at"]), "station": row["station"], "stale": now - row["measured_at"] > timedelta(hours=24)}
     wave = None if not prediction else {"value": prediction["waviness"], "captured_at": iso(prediction["captured_at"]), "stale": now - prediction["captured_at"] > timedelta(hours=24), "previous_day": prediction["captured_at"].astimezone(TZ).date() != today_local}

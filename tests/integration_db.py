@@ -21,6 +21,12 @@ with db.connection() as conn:
 result = api.today()
 assert result['wave']['value'] == .8, result
 assert result['score'] <= 20, result
+with db.connection() as conn:
+    saved = conn.execute("""SELECT r.score,r.policy_snapshot,p.waviness,s.temperature_c AS sea_c,a.temperature_c AS air_c
+      FROM score_revisions r JOIN predictions p ON p.id=r.prediction_id
+      JOIN source_observations s ON s.id=r.sea_observation_id
+      JOIN source_observations a ON a.id=r.air_observation_id LIMIT 1""").fetchone()
+assert api.score(saved['waviness'], saved['sea_c'], saved['air_c'], api.POLICY.__class__(**saved['policy_snapshot'])) == saved['score']
 assert not result['wave']['previous_day'], result
 with db.connection() as conn:
     for i, photo_id in enumerate(photo_ids[:2]):

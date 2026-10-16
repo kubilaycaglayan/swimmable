@@ -8,8 +8,9 @@ db.DATABASE_URL = db.DATABASE_URL.rsplit('/', 1)[0] + '/swimmable_budget_test'
 db.migrate()
 local_day = datetime.now(worker.TZ).date()
 
+FIXED_MEASUREMENT = datetime.now(timezone.utc)
 def fake_air():
-    return 'test-air', datetime.now(timezone.utc), 21.0, {}
+    return 'test-air', FIXED_MEASUREMENT, 21.0, {}
 
 def fake_sea():
     raise ValueError('parser_failure')
@@ -35,8 +36,9 @@ run(18)
 with db.connection() as conn:
     rows = conn.execute('SELECT source,count(*) AS n FROM collection_attempts GROUP BY source').fetchall()
     failures = conn.execute("SELECT count(*) AS n FROM collection_attempts WHERE source='sea' AND state='failed'").fetchone()['n']
+    observations = conn.execute("SELECT count(*) AS n FROM source_observations WHERE source='air'").fetchone()['n']
 assert {r['source']: r['n'] for r in rows} == {'air':3,'sea':3}, rows
-assert failures == 3
+assert failures == 3 and observations == 1
 # A provider 429 with Retry-After suppresses the next slot.
 local_day = local_day + timedelta(days=1)
 def limited():
@@ -52,4 +54,4 @@ run(18)
 with db.connection() as conn:
     count = conn.execute("SELECT count(*) AS n FROM collection_attempts WHERE source='air' AND local_day=%s", (local_day,)).fetchone()['n']
 assert count == 2
-print('concurrent claims, restart, failed attempts, three-per-day budget, rate-limit backoff: OK')
+print('concurrent claims, restart, failed attempts, three-per-day budget, unchanged observation deduplication, rate-limit backoff: OK')

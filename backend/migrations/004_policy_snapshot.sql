@@ -1,0 +1,3 @@
+ALTER TABLE score_revisions ADD COLUMN IF NOT EXISTS policy_snapshot jsonb;
+UPDATE score_revisions SET policy_snapshot = '{"version":"1","wave_weight":0.6,"sea_weight":0.3,"air_weight":0.1,"wave_comfortable_below":0.3,"wave_danger_at":0.6,"sea_swimmable_at":20,"sea_comfortable_above":24,"air_comfortable_at":29,"air_hot_above":32,"danger_cap":20,"wave_weight_reduction_at_max":0.5,"released_share_to_sea":0.75,"wave_curve":[[0,1],[0.3,0.85],[0.6,0.2],[1,0]],"sea_curve":[[0,0],[16,0.1],[20,0.5],[24,0.9],[28,1],[40,1]],"air_curve":[[-20,0],[20,0.2],[29,1],[32,1],[40,0.6],[50,0]]}'::jsonb WHERE policy_version = '1' AND policy_snapshot IS NULL;
+ALTER TABLE score_revisions ALTER COLUMN policy_snapshot SET NOT NULL;

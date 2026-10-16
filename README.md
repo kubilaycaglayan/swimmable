@@ -17,7 +17,7 @@ The worker attempts Open-Meteo and the explicit MGM station `İLKADIM/SAMSUN Lİ
 
 ## Score policy v1
 
-`backend/scoring.py` holds the policy version, weights, band thresholds, cap, and piecewise linear curves. Wave comfort is 1 at 0, .85 at .3, .2 at .6, and 0 at 1. Sea comfort is 0 at 0°C, .1 at 16°C, .5 at 20°C, .9 at 24°C, and 1 at 28°C. Air comfort is 0 at −20°C, .2 at 20°C, 1 from 29–32°C, .6 at 40°C, and 0 at 50°C. Values interpolate linearly and clamp at the ends. Base weights are 60% wave, 30% sea, 10% air. Wave share falls by up to half as waviness rises; 75% of the released share goes to sea and 25% to air. Waviness ≥ .6 caps the final score at 20. These curves are experimental product choices, not validated safety thresholds. Increment the policy version when changing any constant or curve. Score revisions store immutable source IDs and the policy version.
+`backend/scoring.py` holds the policy version, weights, band thresholds, cap, and piecewise linear curves. Wave comfort is 1 at 0, .85 at .3, .2 at .6, and 0 at 1. Sea comfort is 0 at 0°C, .1 at 16°C, .5 at 20°C, .9 at 24°C, and 1 at 28°C. Air comfort is 0 at −20°C, .2 at 20°C, 1 from 29–32°C, .6 at 40°C, and 0 at 50°C. Values interpolate linearly and clamp at the ends. Base weights are 60% wave, 30% sea, 10% air. Wave share falls by up to half as waviness rises; 75% of the released share goes to sea and 25% to air. Waviness ≥ .6 caps the final score at 20. These curves are experimental product choices, not validated safety thresholds. Increment the policy version when changing any constant or curve. Score revisions store immutable source IDs, the policy version, and an exact policy snapshot so historical results can be recalculated after policy changes.
 
 ## Verification
 

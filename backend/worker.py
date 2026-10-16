@@ -1,6 +1,7 @@
 """Single worker: scheduled collection plus durable, one-at-a-time inference."""
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -30,7 +31,10 @@ def fetch_air():
     with urlopen(Request(AIR_URL, headers={"User-Agent": "Swimmable/1.0"}), timeout=20) as response:
         obj = json.load(response)["current"]
     measured = datetime.fromisoformat(obj["time"]).replace(tzinfo=TZ).astimezone(timezone.utc)
-    return "Atakum 41.3378,36.2691", measured, float(obj["temperature_2m"]), {"wind_speed_kmh": obj.get("wind_speed_10m"), "wind_direction_deg": obj.get("wind_direction_10m")}
+    temperature = float(obj["temperature_2m"])
+    if not math.isfinite(temperature):
+        raise ValueError("invalid_air_temperature")
+    return "Atakum 41.3378,36.2691", measured, temperature, {"wind_speed_kmh": obj.get("wind_speed_10m"), "wind_direction_deg": obj.get("wind_direction_10m")}
 
 
 def fetch_sea():
@@ -44,7 +48,10 @@ def fetch_sea():
             measured = datetime.fromisoformat(obj["denizVeriZamani"].replace("Z", "+00:00"))
             if measured.tzinfo is None:
                 measured = measured.replace(tzinfo=TZ)
-            return STATION, measured.astimezone(timezone.utc), float(obj["denizSicaklik"]), {}
+            temperature = float(obj["denizSicaklik"])
+            if not math.isfinite(temperature):
+                continue
+            return STATION, measured.astimezone(timezone.utc), temperature, {}
         except (ValueError, KeyError, TypeError):
             continue
     raise ValueError("station_unavailable")
