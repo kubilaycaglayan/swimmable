@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -106,17 +107,19 @@ def process_one():
     original = Path(job["private_path"])
     private_store = Path(os.environ.get("PRIVATE_STORE", "/private"))
     model_input = private_store / "model-inputs" / f"{job['photo_id']}.jpg"
+    diagnostic_dir = private_store / "diagnostics" / str(job["photo_id"])
     model_input.parent.mkdir(parents=True, exist_ok=True)
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Path(os.environ.get("MODEL_CHECKPOINT", "/model/model.ckpt"))
     try:
         if hashlib.sha256(checkpoint.read_bytes()).hexdigest() != CHECKPOINT_SHA256:
             raise ValueError("checkpoint_invalid")
-        completed = subprocess.run([sys.executable, "/prediction-model/inference.py", str(original), "--checkpoint", str(checkpoint), "--device", "cpu", "--save-model-input", str(model_input), "--json"], capture_output=True, text=True, timeout=1800, check=True)
+        completed = subprocess.run([sys.executable, "/prediction-model/inference.py", str(original), "--checkpoint", str(checkpoint), "--device", "cpu", "--save-model-input", str(model_input), "--diagnostic-dir", str(diagnostic_dir), "--json"], capture_output=True, text=True, timeout=1800, check=True)
         value = float(json.loads(completed.stdout.strip().splitlines()[-1])["waviness"])
         if not 0 <= value <= 1:
             raise ValueError("output_invalid")
         with connection() as db:
-            db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path) VALUES (%s,%s,%s,%s,%s)", (job["photo_id"], value, "v16:91938b85", "v16-segformer-de01bae2", str(model_input)))
+            db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path) VALUES (%s,%s,%s,%s,%s)", (job["photo_id"], value, "v16:91938b85", "v16-segformer-de01bae2-global-fallback", str(model_input)))
             db.execute("UPDATE prediction_jobs SET state='completed',finished_at=now() WHERE id=%s", (job["id"],))
     except Exception as error:
         detail = error.stderr if isinstance(error, subprocess.CalledProcessError) else str(error)
@@ -138,9 +141,12 @@ def prune_private_files():
             WHERE p.uploaded_at < now() - (%s * interval '1 day')
               AND j.state IN ('completed','failed') AND p.files_pruned_at IS NULL""", (days,)).fetchall()
         for row in rows:
+            diagnostic_dir = Path(os.environ.get("PRIVATE_STORE", "/private")) / "diagnostics" / str(row["id"])
             for path in (row["private_path"], row["input_path"]):
                 if path:
                     Path(path).unlink(missing_ok=True)
+            if diagnostic_dir.is_dir():
+                shutil.rmtree(diagnostic_dir)
             db.execute("UPDATE photos SET files_pruned_at=now() WHERE id=%s", (row["id"],))
 
 def recover_interrupted_jobs():
