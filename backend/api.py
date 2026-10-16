@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import io
 import ipaddress
+import logging
 import os
 import secrets
 import uuid
@@ -24,6 +25,7 @@ TZ = ZoneInfo("Europe/Istanbul")
 STORE = Path(os.environ.get("PRIVATE_STORE", "/private"))
 MAX_UPLOAD = 20 * 1024 * 1024
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+logger = logging.getLogger(__name__)
 
 
 def fail(code: str, status: int = 400):
@@ -72,7 +74,7 @@ def capture_time(image: Image.Image):
             value = value.replace(tzinfo=TZ)
             assumed = True
         return value.astimezone(timezone.utc), assumed, False
-    except (ValueError, OverflowError):
+    except (ValueError, OverflowError, TypeError, OSError):
         return datetime.now(TZ).astimezone(timezone.utc), False, True
 
 
@@ -173,35 +175,56 @@ def logout(request: Request, response: Response, x_csrf_token: str = Header(defa
 @app.post("/api/admin/photos", status_code=202)
 async def upload(request: Request, x_csrf_token: str = Header(default="")):
     session(request, x_csrf_token)
+    diagnostic_id = uuid.uuid4()
     if int(request.headers.get("content-length", "0")) > MAX_UPLOAD + 1_000_000:
-        fail("image_too_large")
+        logger.warning("photo_upload_rejected diagnostic_id=%s reason=image_too_large content_length=%s", diagnostic_id, request.headers.get("content-length"))
+        raise HTTPException(413, detail={"code": "image_too_large", "diagnostic_id": str(diagnostic_id)})
     form = await request.form(max_files=1, max_fields=0, max_part_size=MAX_UPLOAD + 1)
     image = form.get("image")
     if not isinstance(image, UploadFile):
-        fail("image_invalid")
+        logger.warning("photo_upload_rejected diagnostic_id=%s reason=image_file_missing", diagnostic_id)
+        raise HTTPException(400, detail={"code": "image_invalid", "diagnostic_id": str(diagnostic_id)})
     data = await image.read(MAX_UPLOAD + 1)
     await form.close()
     if len(data) > MAX_UPLOAD:
-        fail("image_too_large")
+        logger.warning("photo_upload_rejected diagnostic_id=%s reason=image_too_large bytes=%s", diagnostic_id, len(data))
+        raise HTTPException(413, detail={"code": "image_too_large", "diagnostic_id": str(diagnostic_id)})
+    declared_type = (image.content_type or "unknown").lower().split(";", 1)[0]
+    if not declared_type or any(not (char.isalnum() or char in "/.+-_" ) for char in declared_type):
+        declared_type = "invalid"
+    source_extension = Path(image.filename or "").suffix.lower()
+    if len(source_extension) > 12 or any(not (char.isalnum() or char == ".") for char in source_extension):
+        source_extension = ".unknown"
+    captured = datetime.now(TZ).astimezone(timezone.utc)
+    assumed = False
+    capture_assumed = True
+    width = height = 0
+    image_format = "UNDECODED"
+    decoded_ok = False
     try:
         with Image.open(io.BytesIO(data)) as decoded:
-            if decoded.format not in ("HEIF", "JPEG"):
-                fail("image_format_unsupported")
+            image_format = decoded.format or "UNKNOWN"
             captured, assumed, capture_assumed = capture_time(decoded)
-            width, height, image_format = decoded.width, decoded.height, decoded.format
-            if min(width, height) < 224 or width * height > 50_000_000:
-                fail("image_dimensions_invalid")
+            width, height = decoded.width, decoded.height
+            image_format = decoded.format or "UNKNOWN"
+            if width * height > 50_000_000:
+                logger.warning("photo_upload_rejected diagnostic_id=%s reason=image_dimensions_invalid format=%s width=%s height=%s bytes=%s", diagnostic_id, image_format, width, height, len(data))
+                raise HTTPException(400, detail={"code": "image_dimensions_invalid", "diagnostic_id": str(diagnostic_id)})
             ImageOps.exif_transpose(decoded).convert("RGB").load()
-    except (UnidentifiedImageError, OSError, ValueError):
-        fail("image_invalid")
+            decoded_ok = True
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
+        logger.warning("photo_upload_decode_failed diagnostic_id=%s declared_type=%s extension=%s bytes=%s error_type=%s", diagnostic_id, declared_type, source_extension, len(data), type(error).__name__)
+    extension = {"HEIF": ".heic", "AVIF": ".avif", "JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "TIFF": ".tiff", "BMP": ".bmp", "GIF": ".gif", "JPEG2000": ".jp2"}.get(image_format, ".img")
+    logger.info("photo_upload_diagnostic diagnostic_id=%s decode=%s format=%s declared_type=%s extension=%s bytes=%s width=%s height=%s capture_time_assumed=%s offset_assumed=%s", diagnostic_id, "ok" if decoded_ok else "failed", image_format, declared_type, source_extension, len(data), width, height, capture_assumed, assumed)
     digest = hashlib.sha256(data).hexdigest()
-    photo_id, job_id = uuid.uuid4(), uuid.uuid4()
-    extension = ".heic" if image_format == "HEIF" else ".jpg"
+    photo_id, job_id = diagnostic_id, uuid.uuid4()
     path = STORE / "originals" / f"{photo_id}{extension}"
     with connection() as db:
         existing = db.execute("SELECT j.id,j.state,p.captured_at FROM photos p JOIN prediction_jobs j ON j.photo_id=p.id WHERE p.sha256=%s", (digest,)).fetchone()
         if existing:
-            return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True, "captured_at": iso(existing["captured_at"])}
+            return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True, "captured_at": iso(existing["captured_at"]), "diagnostic_id": str(diagnostic_id)}
         path.write_bytes(data)
         try:
             inserted = db.execute("""INSERT INTO photos(id,sha256,private_path,original_name,captured_at,offset_assumed,capture_time_assumed,width,height,format)
@@ -210,20 +233,20 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
                 path.unlink(missing_ok=True)
                 existing = db.execute("SELECT j.id,j.state,p.captured_at FROM photos p JOIN prediction_jobs j ON j.photo_id=p.id WHERE p.sha256=%s", (digest,)).fetchone()
                 if not existing:
-                    fail("upload_conflict", 409)
-                return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True, "captured_at": iso(existing["captured_at"])}
+                    raise HTTPException(409, detail={"code": "upload_conflict", "diagnostic_id": str(diagnostic_id)})
+                return {"job_id": str(existing["id"]), "state": existing["state"], "duplicate": True, "captured_at": iso(existing["captured_at"]), "diagnostic_id": str(diagnostic_id)}
             db.execute("INSERT INTO prediction_jobs(id,photo_id) VALUES (%s,%s)", (job_id, photo_id))
         except Exception:
             path.unlink(missing_ok=True)
             raise
-    return {"job_id": str(job_id), "state": "queued", "duplicate": False, "captured_at": iso(captured), "offset_assumed": assumed, "capture_time_assumed": capture_assumed}
+    return {"job_id": str(job_id), "state": "queued", "duplicate": False, "captured_at": iso(captured), "offset_assumed": assumed, "capture_time_assumed": capture_assumed, "diagnostic_id": str(diagnostic_id)}
 
 
 @app.get("/api/admin/jobs/{job_id}")
 def job(request: Request, job_id: uuid.UUID):
     session(request)
     with connection() as db:
-        row = db.execute("SELECT id,state,queued_at,started_at,finished_at,error_code FROM prediction_jobs WHERE id=%s", (job_id,)).fetchone()
+        row = db.execute("SELECT id,photo_id AS diagnostic_id,state,queued_at,started_at,finished_at,error_code FROM prediction_jobs WHERE id=%s", (job_id,)).fetchone()
     if not row:
         fail("job_not_found", 404)
     return {key: iso(value) if isinstance(value, datetime) else str(value) if isinstance(value, uuid.UUID) else value for key, value in row.items()}
