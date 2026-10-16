@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from starlette.datastructures import UploadFile
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 from psycopg.types.json import Jsonb
 from .db import connection, migrate
@@ -200,7 +200,7 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
     capture_assumed = True
     width = height = 0
     image_format = "UNDECODED"
-    decoded_ok = False
+    header_readable = False
     try:
         with Image.open(io.BytesIO(data)) as decoded:
             image_format = decoded.format or "UNKNOWN"
@@ -210,14 +210,13 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
             if width * height > 50_000_000:
                 logger.warning("photo_upload_rejected diagnostic_id=%s reason=image_dimensions_invalid format=%s width=%s height=%s bytes=%s", diagnostic_id, image_format, width, height, len(data))
                 raise HTTPException(400, detail={"code": "image_dimensions_invalid", "diagnostic_id": str(diagnostic_id)})
-            ImageOps.exif_transpose(decoded).convert("RGB").load()
-            decoded_ok = True
+            header_readable = True
     except HTTPException:
         raise
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
-        logger.warning("photo_upload_decode_failed diagnostic_id=%s declared_type=%s extension=%s bytes=%s error_type=%s", diagnostic_id, declared_type, source_extension, len(data), type(error).__name__)
+        logger.warning("photo_upload_header_failed diagnostic_id=%s declared_type=%s extension=%s bytes=%s error_type=%s", diagnostic_id, declared_type, source_extension, len(data), type(error).__name__)
     extension = {"HEIF": ".heic", "AVIF": ".avif", "JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "TIFF": ".tiff", "BMP": ".bmp", "GIF": ".gif", "JPEG2000": ".jp2"}.get(image_format, ".img")
-    logger.info("photo_upload_diagnostic diagnostic_id=%s decode=%s format=%s declared_type=%s extension=%s bytes=%s width=%s height=%s capture_time_assumed=%s offset_assumed=%s", diagnostic_id, "ok" if decoded_ok else "failed", image_format, declared_type, source_extension, len(data), width, height, capture_assumed, assumed)
+    logger.info("photo_upload_diagnostic diagnostic_id=%s header=%s format=%s declared_type=%s extension=%s bytes=%s width=%s height=%s capture_time_assumed=%s offset_assumed=%s", diagnostic_id, "ok" if header_readable else "failed", image_format, declared_type, source_extension, len(data), width, height, capture_assumed, assumed)
     digest = hashlib.sha256(data).hexdigest()
     photo_id, job_id = diagnostic_id, uuid.uuid4()
     path = STORE / "originals" / f"{photo_id}{extension}"

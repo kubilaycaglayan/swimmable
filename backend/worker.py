@@ -10,7 +10,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from PIL import Image, ImageOps
 from pillow_heif import register_heif_opener
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -107,16 +106,12 @@ def process_one():
     original = Path(job["private_path"])
     private_store = Path(os.environ.get("PRIVATE_STORE", "/private"))
     model_input = private_store / "model-inputs" / f"{job['photo_id']}.jpg"
-    normalized = private_store / "normalized" / f"{job['photo_id']}.png"
     model_input.parent.mkdir(parents=True, exist_ok=True)
-    normalized.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = Path(os.environ.get("MODEL_CHECKPOINT", "/model/model.ckpt"))
     try:
         if hashlib.sha256(checkpoint.read_bytes()).hexdigest() != CHECKPOINT_SHA256:
             raise ValueError("checkpoint_invalid")
-        with Image.open(original) as source:
-            ImageOps.exif_transpose(source).convert("RGB").save(normalized, format="PNG")
-        completed = subprocess.run([sys.executable, "/prediction-model/inference.py", str(normalized), "--checkpoint", str(checkpoint), "--device", "cpu", "--save-model-input", str(model_input), "--json"], capture_output=True, text=True, timeout=1800, check=True)
+        completed = subprocess.run([sys.executable, "/prediction-model/inference.py", str(original), "--checkpoint", str(checkpoint), "--device", "cpu", "--save-model-input", str(model_input), "--json"], capture_output=True, text=True, timeout=1800, check=True)
         value = float(json.loads(completed.stdout.strip().splitlines()[-1])["waviness"])
         if not 0 <= value <= 1:
             raise ValueError("output_invalid")
@@ -143,7 +138,7 @@ def prune_private_files():
             WHERE p.uploaded_at < now() - (%s * interval '1 day')
               AND j.state IN ('completed','failed') AND p.files_pruned_at IS NULL""", (days,)).fetchall()
         for row in rows:
-            for path in (row["private_path"], row["input_path"], str(Path(os.environ.get("PRIVATE_STORE", "/private")) / "normalized" / f"{row['id']}.png")):
+            for path in (row["private_path"], row["input_path"]):
                 if path:
                     Path(path).unlink(missing_ok=True)
             db.execute("UPDATE photos SET files_pruned_at=now() WHERE id=%s", (row["id"],))
