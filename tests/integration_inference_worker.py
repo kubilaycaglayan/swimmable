@@ -29,5 +29,5 @@ with TemporaryDirectory() as directory:
     assert (Path(directory) / 'model-inputs' / f'{photo_id}.jpg').read_bytes() == b'processed'
     api.session = lambda request: None
     details = api.job(None, job_id)
-    assert details['waviness'] == 0.5 and details['preprocessing_seconds'] == 1.2 and details['prediction_seconds'] == 0.03 and details['score'] == row['score'], details
+    assert details['waviness'] == 0.5 and details['model_version'] == 'v19:a77c370d' and details['preprocessing_version'] == 'v19-fast-v2-segformer-de01bae2' and details['preprocessing_seconds'] == 1.2 and details['prediction_seconds'] == 0.03 and details['score'] == row['score'], details
 print('v19 job, saved input and immediate score: OK')

@@ -98,22 +98,15 @@ def today():
     with connection() as db:
         obs = {kind: db.execute("SELECT * FROM source_observations WHERE source=%s ORDER BY measured_at DESC, id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
         prediction = db.execute("""SELECT p.*, ph.captured_at FROM predictions p JOIN photos ph ON ph.id=p.photo_id ORDER BY ph.captured_at DESC, p.id DESC LIMIT 1""").fetchone()
-        group = [] if not prediction else db.execute("""SELECT p.*, ph.captured_at FROM predictions p JOIN photos ph ON ph.id=p.photo_id
-            WHERE ph.captured_at BETWEEN %s - interval '3 minutes' AND %s ORDER BY ph.captured_at DESC,p.id DESC""", (prediction['captured_at'], prediction['captured_at'])).fetchall()
-        mean_wave = sum(item['waviness'] for item in group) / len(group) if group else None
         result = None
-        if group and all(obs.values()):
-            scores = []
-            for item in group:
-                item_score = score(item["waviness"], obs["sea"]["temperature_c"], obs["air"]["temperature_c"])
-                scores.append(item_score)
-                db.execute("""INSERT INTO score_revisions(policy_version, air_observation_id, sea_observation_id, prediction_id, score, policy_snapshot)
-                    VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (POLICY.version, obs["air"]["id"], obs["sea"]["id"], item["id"], item_score, Jsonb(asdict(POLICY))))
-            result = round(sum(scores) / len(scores))
+        if prediction and all(obs.values()):
+            result = score(prediction["waviness"], obs["sea"]["temperature_c"], obs["air"]["temperature_c"])
+            db.execute("""INSERT INTO score_revisions(policy_version, air_observation_id, sea_observation_id, prediction_id, score, policy_snapshot)
+                VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (POLICY.version, obs["air"]["id"], obs["sea"]["id"], prediction["id"], result, Jsonb(asdict(POLICY))))
     def serialize_obs(row):
         return None if not row else {"value": row["temperature_c"], "measured_at": iso(row["measured_at"]), "retrieved_at": iso(row["retrieved_at"]), "station": row["station"], "stale": now - row["measured_at"] > timedelta(hours=24)}
-    wave = None if not prediction else {"value": mean_wave, "photo_count": len(group), "captured_at": iso(prediction["captured_at"]), "stale": now - prediction["captured_at"] > timedelta(hours=24), "previous_day": prediction["captured_at"].astimezone(TZ).date() != today_local, "preview_url": f"/api/wave-preview/{prediction['id']}" if Path(prediction["input_path"]).is_file() else None}
-    return {"today": today_local.isoformat(), "fetched_at": iso(now), "timezone": "Europe/Istanbul", "air": serialize_obs(obs["air"]), "sea": serialize_obs(obs["sea"]), "wave": wave, "bands": bands(mean_wave, obs["sea"]["temperature_c"] if obs["sea"] else None, obs["air"]["temperature_c"] if obs["air"] else None), "score": result, "score_old_inputs": bool(result is not None and (wave["stale"] or wave["previous_day"] or any(now - row["measured_at"] > timedelta(hours=24) for row in obs.values()))), "policy_version": POLICY.version}
+    wave = None if not prediction else {"value": prediction["waviness"], "captured_at": iso(prediction["captured_at"]), "stale": now - prediction["captured_at"] > timedelta(hours=24), "previous_day": prediction["captured_at"].astimezone(TZ).date() != today_local, "preview_url": f"/api/wave-preview/{prediction['id']}" if Path(prediction["input_path"]).is_file() else None}
+    return {"today": today_local.isoformat(), "fetched_at": iso(now), "timezone": "Europe/Istanbul", "air": serialize_obs(obs["air"]), "sea": serialize_obs(obs["sea"]), "wave": wave, "bands": bands(prediction["waviness"] if prediction else None, obs["sea"]["temperature_c"] if obs["sea"] else None, obs["air"]["temperature_c"] if obs["air"] else None), "score": result, "score_old_inputs": bool(result is not None and (wave["stale"] or wave["previous_day"] or any(now - row["measured_at"] > timedelta(hours=24) for row in obs.values()))), "policy_version": POLICY.version}
 
 
 @app.get("/api/wave-preview/{prediction_id}")
@@ -248,12 +241,34 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
     return {"job_id": str(job_id), "state": "queued", "duplicate": False, "captured_at": iso(captured), "offset_assumed": assumed, "capture_time_assumed": capture_assumed, "diagnostic_id": str(diagnostic_id)}
 
 
+@app.get("/api/admin/photo-average")
+def photo_average(request: Request):
+    session(request)
+    with connection() as db:
+        latest = db.execute("""SELECT ph.captured_at FROM predictions p JOIN photos ph ON ph.id=p.photo_id
+            ORDER BY ph.captured_at DESC,p.id DESC LIMIT 1""").fetchone()
+        if not latest:
+            return {"photo_count": 0, "waviness": None, "score": None, "captured_at": None}
+        group = db.execute("""SELECT p.* FROM predictions p JOIN photos ph ON ph.id=p.photo_id
+            WHERE ph.captured_at BETWEEN %s - interval '3 minutes' AND %s""", (latest['captured_at'], latest['captured_at'])).fetchall()
+        obs = {kind: db.execute("SELECT * FROM source_observations WHERE source=%s ORDER BY measured_at DESC,id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
+        scores = []
+        if all(obs.values()):
+            for item in group:
+                item_score = score(item['waviness'], obs['sea']['temperature_c'], obs['air']['temperature_c'])
+                scores.append(item_score)
+                db.execute("""INSERT INTO score_revisions(policy_version,air_observation_id,sea_observation_id,prediction_id,score,policy_snapshot)
+                    VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (POLICY.version, obs['air']['id'], obs['sea']['id'], item['id'], item_score, Jsonb(asdict(POLICY))))
+        return {"photo_count": len(group), "waviness": sum(item['waviness'] for item in group) / len(group),
+                "score": round(sum(scores) / len(scores)) if scores else None, "captured_at": iso(latest['captured_at'])}
+
+
 @app.get("/api/admin/jobs/{job_id}")
 def job(request: Request, job_id: uuid.UUID):
     session(request)
     with connection() as db:
         row = db.execute("""SELECT j.id,j.photo_id AS diagnostic_id,j.state,j.queued_at,j.started_at,j.finished_at,j.error_code, ph.original_name, ph.captured_at,
-            p.waviness,p.preprocessing_seconds,p.prediction_seconds,
+            p.waviness,p.model_version,p.preprocessing_version,p.preprocessing_seconds,p.prediction_seconds,
             EXTRACT(EPOCH FROM (j.started_at-j.queued_at)) AS queue_seconds,
             EXTRACT(EPOCH FROM (j.finished_at-j.started_at)) AS processing_seconds,
             (SELECT score FROM score_revisions WHERE prediction_id=p.id ORDER BY created_at DESC,id DESC LIMIT 1) AS score

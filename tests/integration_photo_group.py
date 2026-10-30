@@ -13,11 +13,14 @@ with db.connection() as conn:
         photo = uuid4()
         conn.execute("INSERT INTO photos(id,sha256,private_path,original_name,captured_at,offset_assumed,width,height,format) VALUES (%s,%s,'/private/test.jpg','test.jpg',%s,false,224,224,'JPEG')", (photo, str(photo), now - timedelta(seconds=seconds)))
         conn.execute('INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path) VALUES (%s,%s,%s,%s,%s)', (photo, waviness, 'test', 'test', '/private/test.jpg'))
-result = api.today()
-assert result['wave']['photo_count'] == 2 and abs(result['wave']['value'] - 0.5) < 1e-10, result
+public = api.today()
+assert public['wave']['value'] == 0.8 and public['score'] == api.score(0.8, 25, 25), public
+api.session = lambda request: None
+result = api.photo_average(None)
+assert result['photo_count'] == 2 and abs(result['waviness'] - 0.5) < 1e-10, result
 expected = round((api.score(0.8, 25, 25) + api.score(0.2, 25, 25)) / 2)
 assert result['score'] == expected, result
 with db.connection() as conn:
     rows = conn.execute('SELECT p.waviness,r.score FROM score_revisions r JOIN predictions p ON p.id=r.prediction_id ORDER BY p.waviness').fetchall()
 assert len(rows) == 2 and [row['score'] for row in rows] == [api.score(0.2,25,25), api.score(0.8,25,25)], rows
-print('three-minute group averages individual scores and retains separate revisions: OK')
+print('public latest photo, admin three-minute average and separate score history: OK')
