@@ -13,6 +13,12 @@ Database and worker ports are private. Uploaded originals and processed model in
 
 Every Compose service uses Docker's `always` restart policy. With the Docker daemon enabled at boot, the database, API, worker, frontend, proxy, and deployment tunnel return after a host reboot and restart after process exits.
 
+## Image preprocessing fallback
+
+The worker uses the preprocessing pipeline in the `prediction-model` submodule. If its tiled water mask cannot produce a reliable water or lower-water crop, the pipeline retries with whole-photo context: it scales the photo down to at most 768 pixels on its longest side, segments that view, expands the mask back to the original dimensions, and repeats the crop and encoding steps. If the retry also cannot produce a reliable crop, the job fails with `no_water`. Fallback diagnostics are stored in the photo's private `diagnostics/<photo-id>/whole-image-fallback` directory.
+
+The model submodule's `config.json` describes its preprocessing values; runtime settings are defined in `preprocessing.py` rather than loaded from that JSON file.
+
 ## Collection
 
 The worker attempts Open-Meteo and the explicit MGM station `İLKADIM/SAMSUN LİMAN KUZEY MENDİREK FENERİ` at the configured 06:00, 12:00, and 18:00 Türkiye-time slots. Its database claim is recorded before each request. Each source gets at most three attempts per local day, including failures. It does not retry or backfill missed slots. Browser visits and uploads do not call either provider. An unchanged measurement retains its original timestamp. The API reports missing and stale inputs independently.
