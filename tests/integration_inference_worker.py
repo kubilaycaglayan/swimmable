@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 import os
-from backend import db, worker
+from backend import api, db, worker
 
 db.DATABASE_URL = db.DATABASE_URL.rsplit('/', 1)[0] + '/swimmable_inference_test'
 db.migrate()
@@ -21,10 +21,13 @@ with TemporaryDirectory() as directory:
         def predict(self, photo, model_input, diagnostics):
             assert photo == original
             model_input.write_bytes(b'processed')
-            return 'ok', 0.5
+            return 'ok', {'waviness': 0.5, 'preprocessing_seconds': 1.2, 'prediction_seconds': 0.03}
     assert worker.process_one(FakeInference())
     with db.connection() as conn:
         row = conn.execute('SELECT j.state,p.waviness,p.model_version,r.score FROM prediction_jobs j JOIN predictions p ON p.photo_id=j.photo_id JOIN score_revisions r ON r.prediction_id=p.id WHERE j.id=%s', (job_id,)).fetchone()
     assert row['state'] == 'completed' and row['waviness'] == 0.5 and row['model_version'] == 'v19:a77c370d' and row['score'] is not None, row
     assert (Path(directory) / 'model-inputs' / f'{photo_id}.jpg').read_bytes() == b'processed'
+    api.session = lambda request: None
+    details = api.job(None, job_id)
+    assert details['waviness'] == 0.5 and details['preprocessing_seconds'] == 1.2 and details['prediction_seconds'] == 0.03 and details['score'] == row['score'], details
 print('v19 job, saved input and immediate score: OK')

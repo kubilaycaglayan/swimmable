@@ -4,6 +4,7 @@ import math
 import multiprocessing
 import os
 import sys
+import time
 from pathlib import Path
 
 CHECKPOINT_SHA256 = 'a77c370dd3bd0d587e16502332fb6a62efd00223d4ba9f475abda0921798d432'
@@ -36,18 +37,27 @@ def serve(pipe, checkpoint, requested_device):
             return
         original, model_input, diagnostics = request
         try:
+            started = time.perf_counter()
             image = load_rgb_image(original)
             encoded = preprocess_photo_encoded(image, segmenter, diagnostics)
             Path(model_input).write_bytes(encoded)
             tensor = to_model_tensor(decode_image(encoded)).to(device)
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
+            preprocessing_seconds = time.perf_counter() - started
+            started = time.perf_counter()
             with torch.inference_mode():
                 result = model(tensor)
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
+            prediction_seconds = time.perf_counter() - started
             if result.shape != (1,):
                 raise ValueError('invalid prediction shape')
             value = float(result.item())
             if not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError('invalid prediction')
-            pipe.send(('ok', value))
+            pipe.send(('ok', {'waviness': value, 'preprocessing_seconds': preprocessing_seconds,
+                              'prediction_seconds': prediction_seconds}))
         except PreprocessingError as error:
             print(f'Preprocessing failed: {error}', flush=True)
             pipe.send(('no_water', None))

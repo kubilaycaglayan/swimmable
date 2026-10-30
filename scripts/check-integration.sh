@@ -13,6 +13,7 @@ run_case() {
 }
 
 run_case swimmable_selection_test tests/integration_db.py
+run_case swimmable_photo_group_test tests/integration_photo_group.py
 run_case swimmable_budget_test tests/integration_budget.py
 run_case swimmable_retention_test tests/integration_retention.py
 run_case swimmable_recovery_test tests/integration_recovery.py

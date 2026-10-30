@@ -19,6 +19,8 @@ Every Compose service uses Docker's `always` restart policy. With the Docker dae
 
 The worker loads the v19 regression and SegFormer models once in a supervised process and reuses them for queued photos. `INFERENCE_DEVICE=auto` selects an available accelerator or CPU; set it to `cpu` or `cuda` to require a specific device. The Docker Compose configuration grants the worker access to an NVIDIA GPU. The v19 fast-v2 pipeline uses one 448 × 448 segmentation pass and produces a masked 224 × 224 JPEG; if it cannot select a reliable water crop, the job fails with `no_water`. Diagnostics are stored under `diagnostics/<photo-id>` in the private store. An inference process that exits or times out is restarted for the next job. The worker records a score after successful inference when air and sea observations are available.
 
+The admin can select multiple photos in one upload; each photo is queued and processed individually, and its prediction, score, queue time, preprocessing time and prediction time are shown separately. The dashboard groups successful predictions captured within the three minutes preceding the newest successful photo. It displays their mean waviness and the rounded mean of their individual comfort scores, calculated with the current temperature observations. Individual predictions and score revisions are retained independently. The newest group remains visible when no newer photo is available and follows the normal stale-data rules.
+
 The model submodule's `config.json` describes its preprocessing values; runtime settings are defined in `preprocessing.py` rather than loaded from that JSON file.
 
 ## Collection

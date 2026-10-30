@@ -112,13 +112,14 @@ def process_one(inference):
     model_input.parent.mkdir(parents=True, exist_ok=True)
     diagnostic_dir.mkdir(parents=True, exist_ok=True)
     try:
-        state, value = inference.predict(original, model_input, diagnostic_dir)
+        state, result = inference.predict(original, model_input, diagnostic_dir)
         if state != "ok":
             with connection() as db:
                 db.execute("UPDATE prediction_jobs SET state='failed',finished_at=now(),error_code=%s WHERE id=%s", (state, job["id"]))
             return True
+        value = result['waviness']
         with connection() as db:
-            prediction = db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path) VALUES (%s,%s,%s,%s,%s) RETURNING id", (job["photo_id"], value, "v19:a77c370d", "v19-fast-v2-segformer-de01bae2", str(model_input))).fetchone()
+            prediction = db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path,preprocessing_seconds,prediction_seconds) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id", (job["photo_id"], value, "v19:a77c370d", "v19-fast-v2-segformer-de01bae2", str(model_input), result['preprocessing_seconds'], result['prediction_seconds'])).fetchone()
             db.execute("UPDATE prediction_jobs SET state='completed',finished_at=now() WHERE id=%s", (job["id"],))
             observations = {kind: db.execute("SELECT id,temperature_c FROM source_observations WHERE source=%s ORDER BY measured_at DESC, id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
             if all(observations.values()):

@@ -1,0 +1,23 @@
+"""Verify recent-photo averaging and separate historical score records."""
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+from backend import api, db
+
+db.DATABASE_URL = db.DATABASE_URL.rsplit('/', 1)[0] + '/swimmable_photo_group_test'
+db.migrate()
+now = datetime.now(timezone.utc)
+with db.connection() as conn:
+    for kind in ('air', 'sea'):
+        conn.execute('INSERT INTO source_observations(source,station,measured_at,temperature_c) VALUES (%s,%s,%s,25)', (kind, 'test', now))
+    for index, (seconds, waviness) in enumerate(((0, 0.8), (179, 0.2), (181, 0.4))):
+        photo = uuid4()
+        conn.execute("INSERT INTO photos(id,sha256,private_path,original_name,captured_at,offset_assumed,width,height,format) VALUES (%s,%s,'/private/test.jpg','test.jpg',%s,false,224,224,'JPEG')", (photo, str(photo), now - timedelta(seconds=seconds)))
+        conn.execute('INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path) VALUES (%s,%s,%s,%s,%s)', (photo, waviness, 'test', 'test', '/private/test.jpg'))
+result = api.today()
+assert result['wave']['photo_count'] == 2 and abs(result['wave']['value'] - 0.5) < 1e-10, result
+expected = round((api.score(0.8, 25, 25) + api.score(0.2, 25, 25)) / 2)
+assert result['score'] == expected, result
+with db.connection() as conn:
+    rows = conn.execute('SELECT p.waviness,r.score FROM score_revisions r JOIN predictions p ON p.id=r.prediction_id ORDER BY p.waviness').fetchall()
+assert len(rows) == 2 and [row['score'] for row in rows] == [api.score(0.2,25,25), api.score(0.8,25,25)], rows
+print('three-minute group averages individual scores and retains separate revisions: OK')
