@@ -1,12 +1,9 @@
 """Single worker: scheduled collection plus durable, one-at-a-time inference."""
-import hashlib
 import json
 import math
 import os
 import re
 import shutil
-import subprocess
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -14,7 +11,11 @@ from pathlib import Path
 from pillow_heif import register_heif_opener
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
+from dataclasses import asdict
+from psycopg.types.json import Jsonb
 from .db import connection, migrate
+from .inference_service import InferenceService
+from .scoring import POLICY, score
 
 register_heif_opener()
 TZ = ZoneInfo("Europe/Istanbul")
@@ -24,7 +25,7 @@ if len(SLOTS) > 3 or sorted(SLOTS) != list(SLOTS) or any(not re.fullmatch(r"(?:[
 AIR_URL = "https://api.open-meteo.com/v1/forecast?latitude=41.3378&longitude=36.2691&current=temperature_2m,wind_speed_10m,wind_direction_10m&temperature_unit=celsius&wind_speed_unit=kmh&timezone=Europe%2FIstanbul"
 SEA_URL = "https://pirireis.mgm.gov.tr/deniz-suyu-sicakliklari"
 STATION = "İLKADIM/SAMSUN LİMAN KUZEY MENDİREK FENERİ"
-CHECKPOINT_SHA256 = "91938b857aa4d6f44d23f0b289f2a76fefd7ed8de2a8cb350e5c7d0e95599289"
+
 
 
 def fetch_air():
@@ -97,7 +98,7 @@ def collect_due(now=None):
                 db.execute("UPDATE collection_attempts SET state='failed',error_code=%s,retry_after_at=%s WHERE id=%s", (code, retry_after, claimed["id"]))
 
 
-def process_one():
+def process_one(inference):
     with connection() as db:
         job = db.execute("""SELECT j.id,j.photo_id,p.private_path FROM prediction_jobs j JOIN photos p ON p.id=j.photo_id
           WHERE j.state='queued' ORDER BY j.queued_at FOR UPDATE OF j SKIP LOCKED LIMIT 1""").fetchone()
@@ -110,23 +111,23 @@ def process_one():
     diagnostic_dir = private_store / "diagnostics" / str(job["photo_id"])
     model_input.parent.mkdir(parents=True, exist_ok=True)
     diagnostic_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint = Path(os.environ.get("MODEL_CHECKPOINT", "/model/model.ckpt"))
     try:
-        if hashlib.sha256(checkpoint.read_bytes()).hexdigest() != CHECKPOINT_SHA256:
-            raise ValueError("checkpoint_invalid")
-        completed = subprocess.run([sys.executable, "/prediction-model/inference.py", str(original), "--checkpoint", str(checkpoint), "--device", "cpu", "--save-model-input", str(model_input), "--diagnostic-dir", str(diagnostic_dir), "--json"], capture_output=True, text=True, timeout=1800, check=True)
-        value = float(json.loads(completed.stdout.strip().splitlines()[-1])["waviness"])
-        if not 0 <= value <= 1:
-            raise ValueError("output_invalid")
+        state, value = inference.predict(original, model_input, diagnostic_dir)
+        if state != "ok":
+            with connection() as db:
+                db.execute("UPDATE prediction_jobs SET state='failed',finished_at=now(),error_code=%s WHERE id=%s", (state, job["id"]))
+            return True
         with connection() as db:
-            db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path) VALUES (%s,%s,%s,%s,%s)", (job["photo_id"], value, "v16:91938b85", "v16-segformer-de01bae2-global-fallback", str(model_input)))
+            prediction = db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path) VALUES (%s,%s,%s,%s,%s) RETURNING id", (job["photo_id"], value, "v19:a77c370d", "v19-fast-v2-segformer-de01bae2", str(model_input))).fetchone()
             db.execute("UPDATE prediction_jobs SET state='completed',finished_at=now() WHERE id=%s", (job["id"],))
+            observations = {kind: db.execute("SELECT id,temperature_c FROM source_observations WHERE source=%s ORDER BY measured_at DESC, id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
+            if all(observations.values()):
+                air, sea = observations["air"], observations["sea"]
+                db.execute("INSERT INTO score_revisions(policy_version,air_observation_id,sea_observation_id,prediction_id,score,policy_snapshot) VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", (POLICY.version, air["id"], sea["id"], prediction["id"], score(value, sea["temperature_c"], air["temperature_c"]), Jsonb(asdict(POLICY))))
     except Exception as error:
-        detail = error.stderr if isinstance(error, subprocess.CalledProcessError) else str(error)
-        detail = (detail or "").lower()
-        code = "no_water" if "no reliable water" in detail or "no reliable lower-water" in detail else "checkpoint_invalid" if "checkpoint_invalid" in detail else "inference_timeout" if isinstance(error, subprocess.TimeoutExpired) else "inference_failed"
+        print(f"Prediction job failed: {type(error).__name__}: {error}", flush=True)
         with connection() as db:
-            db.execute("UPDATE prediction_jobs SET state='failed',finished_at=now(),error_code=%s WHERE id=%s", (code, job["id"]))
+            db.execute("UPDATE prediction_jobs SET state='failed',finished_at=now(),error_code='inference_failed' WHERE id=%s", (job["id"],))
     return True
 
 
@@ -142,7 +143,8 @@ def prune_private_files():
               AND j.state IN ('completed','failed') AND p.files_pruned_at IS NULL""", (days,)).fetchall()
         for row in rows:
             diagnostic_dir = Path(os.environ.get("PRIVATE_STORE", "/private")) / "diagnostics" / str(row["id"])
-            for path in (row["private_path"], row["input_path"]):
+            normalized = Path(os.environ.get("PRIVATE_STORE", "/private")) / "normalized" / f"{row['id']}.png"
+            for path in (row["private_path"], row["input_path"], normalized):
                 if path:
                     Path(path).unlink(missing_ok=True)
             if diagnostic_dir.is_dir():
@@ -164,14 +166,20 @@ def main():
             raise RuntimeError("another worker already holds the inference lock")
         lock_db.commit()
         recover_interrupted_jobs()
+        inference = InferenceService(os.environ.get("MODEL_CHECKPOINT", "/model/model.ckpt"), os.environ.get("INFERENCE_DEVICE", "auto"))
+        inference.start()
         last_prune = 0.0
+        last_collect = 0.0
         while True:
-            collect_due()
-            process_one()
+            inference.start()
+            if time.monotonic() - last_collect >= 30:
+                collect_due()
+                last_collect = time.monotonic()
+            process_one(inference)
             if time.monotonic() - last_prune > 86400:
                 prune_private_files()
                 last_prune = time.monotonic()
-            time.sleep(30)
+            time.sleep(1)
 
 
 if __name__ == "__main__":

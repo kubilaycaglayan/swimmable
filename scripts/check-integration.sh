@@ -16,4 +16,5 @@ run_case swimmable_selection_test tests/integration_db.py
 run_case swimmable_budget_test tests/integration_budget.py
 run_case swimmable_retention_test tests/integration_retention.py
 run_case swimmable_recovery_test tests/integration_recovery.py
+run_case swimmable_inference_test tests/integration_inference_worker.py
 run_case swimmable_upload_test tests/integration_upload_race.py

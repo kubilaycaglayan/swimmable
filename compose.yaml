@@ -25,7 +25,7 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
     volumes:
-      - photos:/private
+      - ./.private/photos:/private
     depends_on:
       db:
         condition: service_healthy
@@ -34,16 +34,19 @@ services:
       context: .
       dockerfile: backend/Dockerfile.worker
     restart: always
+    devices:
+      - nvidia.com/gpu=all
     environment:
       DATABASE_URL: postgresql://swimmable@db:5432/swimmable
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       PRIVATE_STORE: /private
       MODEL_CHECKPOINT: /model/model.ckpt
+      INFERENCE_DEVICE: ${INFERENCE_DEVICE:-auto}
       COLLECTION_SLOTS: ${COLLECTION_SLOTS:-06:00,12:00,18:00}
       PHOTO_RETENTION_DAYS: ${PHOTO_RETENTION_DAYS:-0}
     volumes:
-      - photos:/private
-      - ./.private/model/model.ckpt:/model/model.ckpt:ro
+      - ./.private/photos:/private
+      - ./.private/model-v19/model.ckpt:/model/model.ckpt:ro
       - model_cache:/model-cache
     depends_on:
       db:
@@ -72,5 +75,4 @@ services:
     depends_on: [proxy]
 volumes:
   database:
-  photos:
   model_cache:
