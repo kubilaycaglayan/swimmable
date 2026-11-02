@@ -19,6 +19,8 @@ from .scoring import POLICY, score
 
 register_heif_opener()
 TZ = ZoneInfo("Europe/Istanbul")
+MODEL_VERSION = "fast-v2.2:a1a8f655"
+PREPROCESSING_VERSION = "fast-v2.2-coordinate:96410800"
 SLOTS = tuple(x.strip() for x in os.environ.get("COLLECTION_SLOTS", "06:00,12:00,18:00").split(","))
 if len(SLOTS) > 3 or sorted(SLOTS) != list(SLOTS) or any(not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", slot) for slot in SLOTS):
     raise ValueError("COLLECTION_SLOTS must be at most three sorted HH:MM entries")
@@ -119,7 +121,7 @@ def process_one(inference):
             return True
         value = result['waviness']
         with connection() as db:
-            prediction = db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path,preprocessing_seconds,prediction_seconds) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id", (job["photo_id"], value, "v19:a77c370d", "v19-fast-v2-segformer-de01bae2", str(model_input), result['preprocessing_seconds'], result['prediction_seconds'])).fetchone()
+            prediction = db.execute("INSERT INTO predictions(photo_id,waviness,model_version,preprocessing_version,input_path,preprocessing_seconds,prediction_seconds) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id", (job["photo_id"], value, MODEL_VERSION, PREPROCESSING_VERSION, str(model_input), result['preprocessing_seconds'], result['prediction_seconds'])).fetchone()
             db.execute("UPDATE prediction_jobs SET state='completed',finished_at=now() WHERE id=%s", (job["id"],))
             observations = {kind: db.execute("SELECT id,temperature_c FROM source_observations WHERE source=%s ORDER BY measured_at DESC, id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
             if all(observations.values()):
@@ -167,7 +169,12 @@ def main():
             raise RuntimeError("another worker already holds the inference lock")
         lock_db.commit()
         recover_interrupted_jobs()
-        inference = InferenceService(os.environ.get("MODEL_CHECKPOINT", "/model/model.ckpt"), os.environ.get("INFERENCE_DEVICE", "auto"))
+        inference = InferenceService(
+            os.environ.get("MODEL_REGRESSOR", "/models/regressor-fast-v2.2.onnx"),
+            os.environ.get("MODEL_SEGMENTER", "/models/segformer-b0-step1-448.onnx"),
+            threads=int(os.environ.get("INFERENCE_THREADS", "4")),
+            device=os.environ.get("INFERENCE_DEVICE", "auto"),
+        )
         inference.start()
         last_prune = 0.0
         last_collect = 0.0

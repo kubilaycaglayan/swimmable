@@ -1,12 +1,7 @@
 FROM python:3.14-slim
 WORKDIR /app
-COPY backend/requirements-api.txt /tmp/api.txt
-COPY prediction-model/requirements.txt /tmp/model.txt
-RUN pip install --no-cache-dir -r /tmp/api.txt && \
-    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu126 'torch==2.13.0+cu126' 'torchvision==0.28.0+cu126' && \
-    grep -vE '^(torch|torchvision)==' /tmp/model.txt > /tmp/model-rest.txt && \
-    pip install --no-cache-dir -r /tmp/model-rest.txt
+COPY backend/requirements-api.txt backend/requirements-worker.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements-worker.txt
 COPY backend /app/backend
-COPY prediction-model/*.py /prediction-model/
-ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 HF_HOME=/model-cache
+ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1
 CMD ["python", "-m", "backend.worker"]
