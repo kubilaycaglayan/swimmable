@@ -84,6 +84,21 @@ def startup():
     migrate()
 
 
+def recent_prediction_group(db):
+    latest = db.execute("""SELECT ph.captured_at FROM predictions p JOIN photos ph ON ph.id=p.photo_id
+        ORDER BY ph.captured_at DESC,p.id DESC LIMIT 1""").fetchone()
+    if not latest:
+        return []
+    return db.execute("""SELECT DISTINCT ON (p.photo_id) p.*,ph.captured_at
+        FROM predictions p JOIN photos ph ON ph.id=p.photo_id
+        WHERE ph.captured_at BETWEEN %s - interval '3 minutes' AND %s
+        ORDER BY p.photo_id,p.id DESC""", (latest["captured_at"], latest["captured_at"])).fetchall()
+
+
+def highest_waviness_prediction(group):
+    return max(group, key=lambda item: (item["waviness"], item["id"])) if group else None
+
+
 @app.get("/api/health")
 def health():
     with connection() as db:
@@ -97,7 +112,7 @@ def today():
     today_local = now.astimezone(TZ).date()
     with connection() as db:
         obs = {kind: db.execute("SELECT * FROM source_observations WHERE source=%s ORDER BY measured_at DESC, id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
-        prediction = db.execute("""SELECT p.*, ph.captured_at FROM predictions p JOIN photos ph ON ph.id=p.photo_id ORDER BY ph.captured_at DESC, p.id DESC LIMIT 1""").fetchone()
+        prediction = highest_waviness_prediction(recent_prediction_group(db))
         result = None
         if prediction and all(obs.values()):
             result = score(prediction["waviness"], obs["sea"]["temperature_c"], obs["air"]["temperature_c"])
@@ -112,13 +127,11 @@ def today():
 @app.get("/api/wave-preview/{prediction_id}")
 def wave_preview(prediction_id: int):
     with connection() as db:
-        row = db.execute("""SELECT pr.input_path FROM predictions pr JOIN photos ph ON ph.id=pr.photo_id
-            WHERE pr.id=%s AND pr.id=(SELECT latest.id FROM predictions latest JOIN photos latest_photo ON latest_photo.id=latest.photo_id
-              ORDER BY latest_photo.captured_at DESC, latest.id DESC LIMIT 1)""", (prediction_id,)).fetchone()
-    if not row:
+        prediction = highest_waviness_prediction(recent_prediction_group(db))
+    if not prediction or prediction["id"] != prediction_id:
         fail("preview_not_found", 404)
     model_inputs = (STORE / "model-inputs").resolve()
-    path = Path(row["input_path"]).resolve()
+    path = Path(prediction["input_path"]).resolve()
     if not path.is_relative_to(model_inputs) or path.suffix.lower() != ".jpg" or not path.is_file():
         fail("preview_not_found", 404)
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400, immutable"})
@@ -245,14 +258,12 @@ async def upload(request: Request, x_csrf_token: str = Header(default="")):
 def photo_average(request: Request):
     session(request)
     with connection() as db:
-        latest = db.execute("""SELECT ph.captured_at FROM predictions p JOIN photos ph ON ph.id=p.photo_id
-            ORDER BY ph.captured_at DESC,p.id DESC LIMIT 1""").fetchone()
-        if not latest:
+        group = recent_prediction_group(db)
+        if not group:
             return {"photo_count": 0, "waviness": None, "score": None, "captured_at": None}
-        group = db.execute("""SELECT p.* FROM predictions p JOIN photos ph ON ph.id=p.photo_id
-            WHERE ph.captured_at BETWEEN %s - interval '3 minutes' AND %s""", (latest['captured_at'], latest['captured_at'])).fetchall()
+        latest = max(group, key=lambda item: item["captured_at"])
         obs = {kind: db.execute("SELECT * FROM source_observations WHERE source=%s ORDER BY measured_at DESC,id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
-        highest_waviness = max(group, key=lambda item: item['waviness'])
+        highest_waviness = highest_waviness_prediction(group)
         selected_score = None
         if all(obs.values()):
             for item in group:
