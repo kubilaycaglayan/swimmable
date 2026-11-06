@@ -1,4 +1,4 @@
-"""Verify recent-photo averaging and separate historical score records."""
+"""Verify recent-photo maximum selection and separate historical score records."""
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from backend import api, db
@@ -17,10 +17,9 @@ public = api.today()
 assert public['wave']['value'] == 0.8 and public['score'] == api.score(0.8, 25, 25), public
 api.session = lambda request: None
 result = api.photo_average(None)
-assert result['photo_count'] == 2 and abs(result['waviness'] - 0.5) < 1e-10, result
-expected = round((api.score(0.8, 25, 25) + api.score(0.2, 25, 25)) / 2)
-assert result['score'] == expected, result
+assert result['photo_count'] == 2 and result['waviness'] == 0.8, result
+assert result['score'] == api.score(0.8, 25, 25), result
 with db.connection() as conn:
     rows = conn.execute('SELECT p.waviness,r.score FROM score_revisions r JOIN predictions p ON p.id=r.prediction_id ORDER BY p.waviness').fetchall()
 assert len(rows) == 2 and [row['score'] for row in rows] == [api.score(0.2,25,25), api.score(0.8,25,25)], rows
-print('public latest photo, admin three-minute average and separate score history: OK')
+print('public latest photo, admin three-minute maximum and separate score history: OK')

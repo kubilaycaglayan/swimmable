@@ -252,15 +252,17 @@ def photo_average(request: Request):
         group = db.execute("""SELECT p.* FROM predictions p JOIN photos ph ON ph.id=p.photo_id
             WHERE ph.captured_at BETWEEN %s - interval '3 minutes' AND %s""", (latest['captured_at'], latest['captured_at'])).fetchall()
         obs = {kind: db.execute("SELECT * FROM source_observations WHERE source=%s ORDER BY measured_at DESC,id DESC LIMIT 1", (kind,)).fetchone() for kind in ("air", "sea")}
-        scores = []
+        highest_waviness = max(group, key=lambda item: item['waviness'])
+        selected_score = None
         if all(obs.values()):
             for item in group:
                 item_score = score(item['waviness'], obs['sea']['temperature_c'], obs['air']['temperature_c'])
-                scores.append(item_score)
                 db.execute("""INSERT INTO score_revisions(policy_version,air_observation_id,sea_observation_id,prediction_id,score,policy_snapshot)
                     VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (POLICY.version, obs['air']['id'], obs['sea']['id'], item['id'], item_score, Jsonb(asdict(POLICY))))
-        return {"photo_count": len(group), "waviness": sum(item['waviness'] for item in group) / len(group),
-                "score": round(sum(scores) / len(scores)) if scores else None, "captured_at": iso(latest['captured_at'])}
+                if item['id'] == highest_waviness['id']:
+                    selected_score = item_score
+        return {"photo_count": len(group), "waviness": highest_waviness['waviness'],
+                "score": selected_score, "captured_at": iso(latest['captured_at'])}
 
 
 @app.get("/api/admin/jobs/{job_id}")
