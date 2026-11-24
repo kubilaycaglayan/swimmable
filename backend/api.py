@@ -12,7 +12,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.datastructures import UploadFile
 from PIL import Image, UnidentifiedImageError
@@ -26,12 +25,6 @@ TZ = ZoneInfo("Europe/Istanbul")
 STORE = Path(os.environ.get("PRIVATE_STORE", "/private"))
 MAX_UPLOAD = 20 * 1024 * 1024
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://kubilaycaglayan.com"],
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-CSRF-Token"],
-)
 logger = logging.getLogger(__name__)
 
 
